@@ -121,13 +121,14 @@ class InstagramScraper(object):
         self.session.headers = {'user-agent': CHROME_WIN_UA}
         self.session.cookies.set('ig_pr', '1')
         self.rhx_gis = None
-        self.sessionid = None
 
         self.cookies = None
         self.logged_in = False
         self.last_scraped_filemtime = 0
         if default_attr['filter']:
             self.filter = list(self.filter)
+
+        self.sessionid = None
 
         self.quit = False
 
@@ -209,20 +210,29 @@ class InstagramScraper(object):
 
     def login(self):
         """Logs in to instagram."""
-        self.session.headers.update({'Referer': BASE_URL, 'user-agent': STORIES_UA})
+        self.session.headers.update({'Referer': BASE_URL})
         req = self.session.get(BASE_URL)
 
-        self.session.headers.update({'X-CSRFToken': req.cookies['csrftoken']})
+        if 'csrftoken' in req.cookies:
+            self.session.headers.update({'X-CSRFToken': req.cookies['csrftoken']})
+        else:
+            shared_data = self.get_shared_data()
+            self.session.headers.update(
+                {'X-CSRFToken': shared_data['config']['csrf_token'],
+                 'X-Instagram-AJAX': shared_data['rollout_hash'],
+                 'X-Requested-With': 'XMLHttpRequest'})
 
         login_data = {'username': self.login_user, 'password': self.login_pass}
         login = self.session.post(LOGIN_URL, data=login_data, allow_redirects=True)
-        self.session.headers.update({'X-CSRFToken': login.cookies['csrftoken']})
+        if 'csrftoken' in login.cookies:
+            self.session.headers.update({'X-CSRFToken': login.cookies['csrftoken']})
         self.cookies = login.cookies
+        if 'sessionid' in login.cookies:
+            self.sessionid = login.cookies['sessionid']
         login_text = json.loads(login.text)
 
         if login_text.get('authenticated') and login.status_code == 200:
             self.logged_in = True
-            self.sessionid = login.cookies.get_dict()["sessionid"]
             self.rhx_gis = self.get_shared_data()['rhx_gis']
         else:
             self.logger.error('Login failed for ' + self.login_user)
@@ -547,6 +557,7 @@ class InstagramScraper(object):
 
     def scrape(self, executor=concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)):
         """Crawls through and downloads user's media"""
+        self.session.headers = {'user-agent': STORIES_UA}
         try:
             for username in self.usernames:
                 self.posts = []
@@ -571,8 +582,7 @@ class InstagramScraper(object):
                 self.rhx_gis = shared_data['rhx_gis']
 
                 self.get_profile_pic(dst, executor, future_to_item, user, username)
-                if self.sessionid is not None:
-                    self.session.cookies.set('sessionid', self.sessionid)
+                self.session.cookies.set('sessionid', self.sessionid)
                 self.get_stories(dst, executor, future_to_item, user, username)
                 self.sessionid = self.session.cookies.get_dict()["sessionid"]
 
@@ -604,6 +614,7 @@ class InstagramScraper(object):
                 except ValueError:
                     self.logger.error("Unable to scrape user - %s" % username)
         finally:
+            self.session.headers = {'user-agent': CHROME_WIN_UA}
             self.quit = True
             self.logout()
 
